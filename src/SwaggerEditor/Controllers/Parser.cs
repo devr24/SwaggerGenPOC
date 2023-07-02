@@ -12,6 +12,13 @@ using System.Net;
 
 namespace SwaggerEditor.Controllers;
 
+public class HeaderParamExample
+{
+    public string ClientId { get; set; }
+    public string ClientSecret { get; set; }
+}
+
+
 [ApiController]
 [Route("[controller]")]
 public class Parser : ControllerBase
@@ -21,6 +28,13 @@ public class Parser : ControllerBase
     public Parser(IBlobService blobService)
     {
         this.blobService = blobService;
+    }
+
+    [HttpPost("SampleWithHeader", Name = "PostSampleWIthHeaders")]
+    public async Task<IActionResult> PostSampleWithHeaders([FromHeader] HeaderParamExample headerParams)
+    {
+
+        return Ok();
     }
 
     [HttpPost("SwaggerMethods", Name = "GetSwaggerDocumentMethods")]
@@ -92,6 +106,7 @@ public class Parser : ControllerBase
         outputDoc.Components = new OpenApiComponents();
         outputDoc.Servers = new List<OpenApiServer>();
         var skipSet = new HashSet<string>(request.methodsToSkip.Select(s => s.ToLowerInvariant()));
+        var tags = new HashSet<string>(request.TagRewrite.ToList().Select(s => s.Key.ToLowerInvariant()));
 
         var methods = new List<object>();
         var uniqueOpIds = new HashSet<string>();
@@ -163,6 +178,26 @@ public class Parser : ControllerBase
                         }
 
 
+                        // Remove any operations that was flagged for skipping.
+                        foreach (var openApiOperation in path.Value.Operations)
+                        {
+                            if (skipSet.Contains(openApiOperation.Value.OperationId.ToLowerInvariant()))
+                            {
+                                path.Value.Operations.Remove(openApiOperation.Key);
+                            }
+
+                            if (openApiOperation.Value.Tags.Select(o=>o.Name).Any(o => tags.Contains(o)))
+                            {
+                                foreach (var openApiTag in openApiOperation.Value.Tags)
+                                {
+                                    var tagName = request.TagRewrite.FirstOrDefault(s => s.Key == openApiTag.Name).Value;
+                                    openApiTag.Name = tagName;
+                                }
+                            }
+
+                        }
+
+                        // Remove entire path if it was skipped.
                         if (!skipSet.Contains(path.Key.ToLowerInvariant()))
                         {
                             var key = path.Key;
@@ -171,7 +206,10 @@ public class Parser : ControllerBase
                             if (request.PathSegmentToRewrite.Key?.Length > 0)
                                 key = key.Replace(request.PathSegmentToRewrite.Key, request.PathSegmentToRewrite.Value);
 
-                            outputDoc.Paths.Add(key, path.Value);
+                            if (path.Value.Operations.Count > 0)
+                            {
+                                outputDoc.Paths.Add(key, path.Value);
+                            }
                         }
                     }
 
@@ -213,12 +251,9 @@ public class Parser : ControllerBase
                         }
                     }
 
-
-
-
+                    
                     foreach (var schema in openApiDocument.Components.Schemas)
                     {
-
                         var cleanKey = schema.Key.Replace("`", "");
 
                         if (cleanKey.Length < schema.Key.Length || schema.Value.Reference.Id.Contains("`"))
@@ -229,15 +264,20 @@ public class Parser : ControllerBase
                             {
                                 Id = schema.Value.Reference.Id.Replace("`", ""),
                                 ExternalResource = schema.Value.Reference.Id,
-                                HostDocument = schema.Value.Reference.HostDocument,
+                                //HostDocument = schema.Value.Reference.HostDocument,
                                 IsFragrament = schema.Value.Reference.IsFragrament,
                                 Type = schema.Value.Reference.Type
                             };
 
                             schema.Value.Reference.ExternalResource = schema.Value.Reference.ExternalResource.Replace("`", "");
-                        } 
+                        }
 
-                        outputDoc.Components.Schemas.Add(cleanKey, schema.Value);
+                        if (outputDoc.Components.Schemas.ContainsKey(cleanKey))
+                        {
+                            Console.WriteLine($"Key already exists {cleanKey}");
+                        }
+                        else
+                            outputDoc.Components.Schemas.Add(cleanKey, schema.Value);
                     }
                 }
             }
@@ -277,6 +317,8 @@ public class SwaggerCombineRequest
     public string[] RemoveContentTypes { get; set; }
 
     public string[] ServerPaths { get; set; }
+
+    public KeyValuePair<string, string>[] TagRewrite { get; set; }
 
     public KeyValuePair<string, string> PathSegmentToRewrite { get; set; }
 

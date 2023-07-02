@@ -20,8 +20,8 @@ namespace SwaggerEditor.Services
 
         public BlobService(string connectionString)
         {
-            blobServiceClient = new BlobServiceClient(connectionString);
-            blobContainerClient = CreateContainerClientAsync().GetAwaiter().GetResult();
+           blobServiceClient = new BlobServiceClient(connectionString);
+           blobContainerClient = CreateContainerClientAsync().GetAwaiter().GetResult();
         }
 
         private async Task<BlobContainerClient> CreateContainerClientAsync()

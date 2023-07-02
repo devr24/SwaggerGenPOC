@@ -13,7 +13,7 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-builder.Services.AddSingleton<IBlobService>(new BlobService("{CONNECTION STRING!}"));
+builder.Services.AddSingleton<IBlobService>(new BlobService("{connectionString}"));
 
 var app = builder.Build();
 
@@ -35,78 +35,78 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-string[][] connections = new string[][] {
-    new string[] { "192.167.0.0", "192.167.0.1" },
-    new string[] { "192.167.0.2", "192.167.0.0" },
-    new string[] { "192.167.0.0", "192.167.0.3" }
-};
+//string[][] connections = new string[][] {
+//    new string[] { "192.167.0.0", "192.167.0.1" },
+//    new string[] { "192.167.0.2", "192.167.0.0" },
+//    new string[] { "192.167.0.0", "192.167.0.3" }
+//};
 
 
-var toggleIps = new [] {"192.167.0.1", "192.167.0.0", "192.167.0.2", "192.167.0.0", "0.0.0.0" };
+//var toggleIps = new [] {"192.167.0.1", "192.167.0.0", "192.167.0.2", "192.167.0.0", "0.0.0.0" };
 
-var res = solution(connections, toggleIps);
+//var res = solution(connections, toggleIps);
 
-Console.WriteLine(res);
+//Console.WriteLine(res);
 
-int[] solution(string[][] connections, string[] toggleIps)
-{
+//int[] solution(string[][] connections, string[] toggleIps)
+//{
 
-    // list of devices and the connection state between two
-    var devices = new Dictionary<string, bool>();
-    var connectionState = new Dictionary<string, bool>();
-    foreach (var conn in connections)
-    {
-        var key = conn[0] + "," + conn[1];
+//    // list of devices and the connection state between two
+//    var devices = new Dictionary<string, bool>();
+//    var connectionState = new Dictionary<string, bool>();
+//    foreach (var conn in connections)
+//    {
+//        var key = conn[0] + "," + conn[1];
 
-        // default the connection between two devices as inactive (false).
-        connectionState[key] = false;
+//        // default the connection between two devices as inactive (false).
+//        connectionState[key] = false;
 
-        // default the device state as inactive (false).
-        devices[conn[0]] = false;
-        devices[conn[1]] = false;
-    }
+//        // default the device state as inactive (false).
+//        devices[conn[0]] = false;
+//        devices[conn[1]] = false;
+//    }
 
-    Console.WriteLine(connectionState);
-    Console.WriteLine(devices);
+//    Console.WriteLine(connectionState);
+//    Console.WriteLine(devices);
 
-    var impactCounts = new List<int>();
-    foreach (var ip in toggleIps)
-    {
-        if (devices.ContainsKey(ip))
-        {
-            bool prevState = devices[ip];
-            devices[ip] = !prevState;
+//    var impactCounts = new List<int>();
+//    foreach (var ip in toggleIps)
+//    {
+//        if (devices.ContainsKey(ip))
+//        {
+//            bool prevState = devices[ip];
+//            devices[ip] = !prevState;
 
-            // Toggle connection states and count impacts
-            int impactCount = 0;
-            foreach (string[] conn in connections)
-            {
-                if (conn[0] == ip || conn[1] == ip)
-                {
-                    // The device participates in this connection
-                    string key = conn[0] + "," + conn[1];
-                    bool prevConnState = connectionState[key];
-                    bool newConnState = devices[conn[0]] && devices[conn[1]];
-                    connectionState[key] = newConnState;
-                    if (prevConnState != newConnState)
-                    {
-                        impactCount++;
-                    }
-                }
-            }
+//            // Toggle connection states and count impacts
+//            int impactCount = 0;
+//            foreach (string[] conn in connections)
+//            {
+//                if (conn[0] == ip || conn[1] == ip)
+//                {
+//                    // The device participates in this connection
+//                    string key = conn[0] + "," + conn[1];
+//                    bool prevConnState = connectionState[key];
+//                    bool newConnState = devices[conn[0]] && devices[conn[1]];
+//                    connectionState[key] = newConnState;
+//                    if (prevConnState != newConnState)
+//                    {
+//                        impactCount++;
+//                    }
+//                }
+//            }
 
-            // Add impact count to the result
-            impactCounts.Add(impactCount);
-        }
-        else
-        {
+//            // Add impact count to the result
+//            impactCounts.Add(impactCount);
+//        }
+//        else
+//        {
 
-            impactCounts.Add(0);
-        }
-    }
+//            impactCounts.Add(0);
+//        }
+//    }
 
-    return impactCounts.ToArray();
-}
+//    return impactCounts.ToArray();
+//}
 
 
 
