@@ -186,7 +186,7 @@ public class Parser : ControllerBase
                                 path.Value.Operations.Remove(openApiOperation.Key);
                             }
 
-                            if (openApiOperation.Value.Tags.Select(o=>o.Name).Any(o => tags.Contains(o)))
+                            if (openApiOperation.Value.Tags.Select(o=>o.Name.ToLowerInvariant()).Any(o => tags.Contains(o)))
                             {
                                 foreach (var openApiTag in openApiOperation.Value.Tags)
                                 {
@@ -218,11 +218,19 @@ public class Parser : ControllerBase
                     {
                         foreach (var server in request.ServerPaths)
                         {
-                            outputDoc.Servers = new List<OpenApiServer>();
-                            outputDoc.Servers.Add(new OpenApiServer
+                            if (outputDoc.Servers == null)
                             {
-                                Url = server
-                            });
+                                outputDoc.Servers = new List<OpenApiServer>();
+                            }
+
+                            if (!outputDoc.Servers.Any(s => s.Url == server))
+                            {
+
+                                outputDoc.Servers.Add(new OpenApiServer
+                                {
+                                    Url = server
+                                });
+                            }
                         }
                     }
                     else
