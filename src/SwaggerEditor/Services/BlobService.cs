@@ -10,6 +10,7 @@ namespace SwaggerEditor.Services
     {
         Task<Tuple<string, string>> UploadBlob(string localFilePath, string content);
         Task DownloadToStream(string localFilePath, MemoryStream memoryStream);
+        Task<Stream> DownloadStream(string localFilePath);
     }
 
     public class BlobService : IBlobService
@@ -71,6 +72,19 @@ namespace SwaggerEditor.Services
 
             //fileStream.Close();
 
+        }
+
+        public async Task<Stream> DownloadStream(string localFilePath)
+        {
+            BlobClient blobClient = blobContainerClient.GetBlobClient(localFilePath);
+
+            if (await blobClient.ExistsAsync())
+            {
+                var stream = await blobClient.OpenReadAsync();
+                return stream; // Set the appropriate Content-Type for your data
+            }
+
+            return null;
         }
 
         public async Task DownloadToStream(string localFilePath, MemoryStream memoryStream)

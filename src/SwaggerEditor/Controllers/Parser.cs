@@ -107,6 +107,8 @@ public class Parser : ControllerBase
         outputDoc.Servers = new List<OpenApiServer>();
         var skipSet = new HashSet<string>(request.methodsToSkip.Select(s => s.ToLowerInvariant()));
         var tags = new HashSet<string>(request.TagRewrite.ToList().Select(s => s.Key.ToLowerInvariant()));
+        var rewrites = new HashSet<string>(request.PathSegmentToRewrite.ToList().Select(s => s.Key));
+        var paramRewrite = new HashSet<string>(request.ParameterRewrite.ToList().Select(s => s.Key.ToLowerInvariant()));
 
         var methods = new List<object>();
         var uniqueOpIds = new HashSet<string>();
@@ -145,11 +147,6 @@ public class Parser : ControllerBase
                                     {
                                         op1.Content.Remove(s);
                                     }
-                                    
-                                    //op1.Content.Remove("text/plain");
-                                    //op1.Content.Remove("text/json");
-                                    //op1.Content.Remove("application/*+json");
-                                    //op1.Content.Remove("application/json-patch+json");
                                 }
                             }
 
@@ -202,9 +199,35 @@ public class Parser : ControllerBase
                         {
                             var key = path.Key;
 
+                            // Re-write the key if necessary.
+                            foreach (var rewrite in rewrites)
+                            {
+                                if (key.Contains(rewrite))
+                                {
+                                    var requestRewrite = request.PathSegmentToRewrite.FirstOrDefault(s => s.Key == rewrite);
+                                    key = key.Replace(requestRewrite.Key, requestRewrite.Value);
+                                }
+                            }
 
-                            if (request.PathSegmentToRewrite.Key?.Length > 0)
-                                key = key.Replace(request.PathSegmentToRewrite.Key, request.PathSegmentToRewrite.Value);
+                            //for (int i = 0; i < path.Value.Operations.Count; i++)
+                            //{
+                                foreach (var operation in path.Value.Operations)
+                                {
+                                    for (int i = 0; i < operation.Value.Parameters.Count; i++)
+                                    {
+                                        var p = operation.Value.Parameters[i].Name.ToLowerInvariant();
+                                        if (paramRewrite.Contains(p))
+                                        {
+                                            var keyPair = request.ParameterRewrite.FirstOrDefault(o => o.Key.ToLowerInvariant() == p);
+                                            operation.Value.Parameters[i].Name = keyPair.Value;
+                                            operation.Value.Parameters[i].Description = operation.Value.Parameters[i].Description?.Replace(keyPair.Key, keyPair.Value);
+                                        }
+                                    }      
+                                }
+
+                                 
+                            //}
+
 
                             if (path.Value.Operations.Count > 0)
                             {
@@ -239,8 +262,19 @@ public class Parser : ControllerBase
                         {
                             foreach (var server in openApiDocument.Servers)
                             {
-                                if (request.PathSegmentToRewrite.Key?.Length > 0)
-                                    server.Url = server.Url.Replace(request.PathSegmentToRewrite.Key, request.PathSegmentToRewrite.Value);
+                                //if (request.PathSegmentToRewrite.Key?.Length > 0)
+                                //    server.Url = server.Url.Replace(request.PathSegmentToRewrite.Key, request.PathSegmentToRewrite.Value);
+
+
+                                // Re-write the key if necessary.
+                                foreach (var rewrite in rewrites)
+                                {
+                                    if (server.Url.Contains(rewrite))
+                                    {
+                                        var requestRewrite = request.PathSegmentToRewrite.FirstOrDefault(s => s.Key == rewrite);
+                                        server.Url = server.Url.Replace(requestRewrite.Key, requestRewrite.Value);
+                                    }
+                                }
 
                                 outputDoc.Servers.Add(server);
                             }
@@ -249,8 +283,20 @@ public class Parser : ControllerBase
                         {
 
                             var url = fileName;
-                            if (request.PathSegmentToRewrite.Key?.Length > 0)
-                                url = url.Replace(request.PathSegmentToRewrite.Key, request.PathSegmentToRewrite.Value);
+
+                            //if (request.PathSegmentToRewrite.Key?.Length > 0)
+                            //    url = url.Replace(request.PathSegmentToRewrite.Key, request.PathSegmentToRewrite.Value);
+
+
+                            // Re-write the key if necessary.
+                            foreach (var rewrite in rewrites)
+                            {
+                                if (url.Contains(rewrite))
+                                {
+                                    var requestRewrite = request.PathSegmentToRewrite.FirstOrDefault(s => s.Key == rewrite);
+                                    url = url.Replace(requestRewrite.Key, requestRewrite.Value);
+                                }
+                            }
 
                             outputDoc.Servers = new List<OpenApiServer>();
                             outputDoc.Servers.Add(new OpenApiServer {
@@ -276,7 +322,7 @@ public class Parser : ControllerBase
                                 IsFragrament = schema.Value.Reference.IsFragrament,
                                 Type = schema.Value.Reference.Type
                             };
-
+                            
                             schema.Value.Reference.ExternalResource = schema.Value.Reference.ExternalResource.Replace("`", "");
                         }
 
@@ -293,7 +339,7 @@ public class Parser : ControllerBase
         }
 
         var format = request.OutputFormat == OutputFormat.JSON ? OpenApiFormat.Json : OpenApiFormat.Yaml;
-
+        
         var outputString = outputDoc.Serialize(OpenApiSpecVersion.OpenApi3_0, format);
 
         var uniqueName = Guid.NewGuid() + "-swagger.json";
@@ -304,10 +350,21 @@ public class Parser : ControllerBase
         Response.Clear();
         Response.ContentType = "application/octet-stream";
         Response.Headers.Add("blob-uri", uri.Item1);
-        Response.Headers.Add("swagger-view", $"{localUrl}/swagger-explorer/?uri={Uri.EscapeDataString(uri.Item2)}");
+        Response.Headers.Add("file-name", uniqueName);
+        Response.Headers.Add("swagger-view", $"{localUrl}/swagger-explorer/?uri={localUrl}/Parser/SwaggerView/{uniqueName}");
         Response.Headers.Add("Content-Disposition", $"attachment; filename=swagger.{request.OutputFormat.ToString().ToLowerInvariant()}");
         await Response.WriteAsync(outputString);
         await Response.CompleteAsync();
+    }
+
+    [HttpGet("SwaggerView/{fileName}")]
+    public async Task<IActionResult> Get(string fileName)
+    {
+        var stream = await blobService.DownloadStream(fileName);
+        if (stream == null)
+            return NotFound();
+
+        return File(stream, "application/octet-stream"); // Set the appropriate Content-Type for your data
     }
 }
 
@@ -328,7 +385,9 @@ public class SwaggerCombineRequest
 
     public KeyValuePair<string, string>[] TagRewrite { get; set; }
 
-    public KeyValuePair<string, string> PathSegmentToRewrite { get; set; }
+    public KeyValuePair<string, string>[] PathSegmentToRewrite { get; set; }
+
+    public KeyValuePair<string, string>[] ParameterRewrite { get; set; }
 
     public OutputFormat OutputFormat { get; set; } = OutputFormat.JSON;
 }
@@ -342,14 +401,14 @@ public enum OutputFormat
 }
 
 
-public class SwaggerDoc
-{
-    public string openapi { get; set; }
-    public object servers { get; set; }
-    public Info info { get; set; }
-    public Dictionary<string, object> paths { get; set; }
-    public Components components { get; set; }
-}
+//public class SwaggerDoc
+//{
+//    public string openapi { get; set; }
+//    public object servers { get; set; }
+//    public Info info { get; set; }
+//    public Dictionary<string, object> paths { get; set; }
+//    public Components components { get; set; }
+//}
 
 public class Info
 {
