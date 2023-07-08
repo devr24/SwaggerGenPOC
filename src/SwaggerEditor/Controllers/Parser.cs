@@ -1,42 +1,28 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using System.Collections.Immutable;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.OpenApi;
 using Microsoft.OpenApi.Extensions;
 using Microsoft.OpenApi.Models;
 using Microsoft.OpenApi.Readers;
 using Microsoft.OpenApi.Validations;
-using Newtonsoft.Json;
+using SwaggerEditor.Models;
 using SwaggerEditor.Services;
-using System.ComponentModel;
-using System.ComponentModel.DataAnnotations;
 using System.Net;
+using Azure.Core;
 
 namespace SwaggerEditor.Controllers;
-
-public class HeaderParamExample
-{
-    public string ClientId { get; set; }
-    public string ClientSecret { get; set; }
-}
-
 
 [ApiController]
 [Route("[controller]")]
 public class Parser : ControllerBase
 {
-    private readonly IBlobService blobService;
+    private readonly IBlobService _blobService;
 
     public Parser(IBlobService blobService)
     {
-        this.blobService = blobService;
+        _blobService = blobService;
     }
-
-    [HttpPost("SampleWithHeader", Name = "PostSampleWIthHeaders")]
-    public async Task<IActionResult> PostSampleWithHeaders([FromHeader] HeaderParamExample headerParams)
-    {
-
-        return Ok();
-    }
-
+    
     [HttpPost("SwaggerMethods", Name = "GetSwaggerDocumentMethods")]
     public async Task<IActionResult> PostSwaggerDocMethods(List<string> swaggerJsonUrls)
     {
@@ -44,27 +30,10 @@ public class Parser : ControllerBase
 
         foreach (var fileJsonUrl in swaggerJsonUrls)
         {
-            var fileName = fileJsonUrl.Split("/").Last();
-
-            using (var client = new WebClient())
-            {
-                var content = await client.DownloadDataTaskAsync(fileJsonUrl);
-                using (var stream = new MemoryStream(content))
-                {
-                    // Read V3 as YAML
-                    var openApiDocument = new OpenApiStreamReader().Read(stream, out var diagnostic); 
-                    var items = new List<object>();
-                    foreach (var path in openApiDocument.Paths)
-                    {
-                        foreach (var op in path.Value.Operations)
-                        {
-                            items.Add(new { Endpoint = path.Key, Method = op.Key.ToString(), op.Value.OperationId, url = $"{fileJsonUrl.Split("/swagger").FirstOrDefault()}{path.Key}"});
-                        }
-                    }
-                    var validationErrors = openApiDocument.Validate(ValidationRuleSet.GetDefaultRuleSet()).ToList();
-                    methods.Add(new { API = openApiDocument.Info.Title, source = fileJsonUrl, isValid = !validationErrors.Any(), validationErrors, Methods = items });
-                }
-            }
+            var openApiDocument = await GetOpenApiDocument(fileJsonUrl);
+            var documentOps = GetOpenApiDocumentOperations(openApiDocument, fileJsonUrl);
+            var documentErrors = GetOpenApiDocumentErrors(openApiDocument);
+            methods.Add(new { API = openApiDocument.Info.Title, source = fileJsonUrl, isValid = !documentErrors.Any(), documentErrors, Methods = documentOps });
         }
 
         return Ok(methods);
@@ -77,273 +46,202 @@ public class Parser : ControllerBase
 
         foreach (var fileJsonUrl in swaggerJsonUrls)
         {
-            using (var client = new WebClient())
-            {
-                var content = await client.DownloadDataTaskAsync(fileJsonUrl);
-                using (var stream = new MemoryStream(content))
-                {
-                    // Read V3 as YAML
-                    var openApiDocument = new OpenApiStreamReader().Read(stream, out var diagnostic);
-                    var validationErrors = openApiDocument.Validate(ValidationRuleSet.GetDefaultRuleSet()).ToList();
-                    methods.Add(new { API = openApiDocument.Info.Title, source = fileJsonUrl, isValid = !validationErrors.Any(), validationErrors });
-                }
-            }
+            var openApiDocument = await GetOpenApiDocument(fileJsonUrl);
+            var documentErrors = GetOpenApiDocumentErrors(openApiDocument);
+            methods.Add(new { API = openApiDocument.Info.Title, source = fileJsonUrl, isValid = !documentErrors.Any(), documentErrors });
         }
 
         return Ok(methods);
     }
 
-    [HttpPost("CombineSwaggers", Name = "CombineSwaggers")]
-    public async Task PostCombineSwaggers(SwaggerCombineRequest request)
+    private void CleanOperations(KeyValuePair<OperationType, OpenApiOperation> operation, string[] removeContentTypes)
     {
-        var outputDoc = new OpenApiDocument();
-        outputDoc.Info = new OpenApiInfo
+        if (removeContentTypes.Length > 0)
         {
-            Title = request.info.title,
-            Version = request.info.version,
-        };
-        outputDoc.Paths = new OpenApiPaths();
-        outputDoc.Components = new OpenApiComponents();
-        outputDoc.Servers = new List<OpenApiServer>();
+            if (operation.Value.RequestBody != null)
+            {
+                foreach (var s in removeContentTypes)
+                {
+                    operation.Value.RequestBody.Content.Remove(s);
+                }
+            }
+            foreach (var responsesKey in operation.Value.Responses.Keys)
+            {
+                var op1 = operation.Value.Responses[responsesKey];
+
+                foreach (var s in removeContentTypes)
+                {
+                    op1.Content.Remove(s);
+                }
+            }
+        }
+    }
+
+    [HttpPost("CombineSwaggers", Name = "CombineSwaggers")]
+    public async Task PostCombineSwaggers(SwaggerCombine request)
+    {
         var skipSet = new HashSet<string>(request.methodsToSkip.Select(s => s.ToLowerInvariant()));
         var tags = new HashSet<string>(request.TagRewrite.ToList().Select(s => s.Key.ToLowerInvariant()));
         var rewrites = new HashSet<string>(request.PathSegmentToRewrite.ToList().Select(s => s.Key));
         var paramRewrite = new HashSet<string>(request.ParameterRewrite.ToList().Select(s => s.Key.ToLowerInvariant()));
-
-        var methods = new List<object>();
+        
         var uniqueOpIds = new HashSet<string>();
 
-        foreach (var fileJsonUrl in request.swaggerJsonUrls)
+        var outputPaths = new OpenApiPaths();
+        var openApiSchemas = new Dictionary<string, OpenApiSchema>();
+        var openApiServers = new List<OpenApiServer>();
+
+        foreach (var jsonFileUrl in request.swaggerJsonUrls)
         {
-            var fileName = fileJsonUrl.Split("/").Last();
+            var openApiDocument = await GetOpenApiDocument(jsonFileUrl);
 
-
-            using (var client = new WebClient())
+            foreach (var path in openApiDocument.Paths)
             {
-                var content = client.DownloadData(fileJsonUrl);
-                using (var stream = new MemoryStream(content))
+                foreach (var op in path.Value.Operations)
                 {
-                    // Read V3 as YAML
-                    var openApiDocument = new OpenApiStreamReader().Read(stream, out var diagnostic);
+                    CleanOperations(op, request.RemoveContentTypes);
 
-                    foreach (var path in openApiDocument.Paths)
+                    string opId = op.Value.OperationId;
+
+                    if (uniqueOpIds.Contains(opId))
                     {
-                        foreach (var op in path.Value.Operations)
+                        var i = 1;
+                        var isUnique = false;
+                        do
                         {
-                            if (request.RemoveContentTypes.Length > 0)
+                            var proposedKey = $"{opId}{i}";
+                            if (!uniqueOpIds.Contains(proposedKey))
                             {
-                                if (op.Value.RequestBody != null)
-                                {
-                                    foreach (var s in request.RemoveContentTypes)
-                                    {
-                                        op.Value.RequestBody.Content.Remove(s);
-                                    }
-                                }
-                                foreach (var responsesKey in op.Value.Responses.Keys)
-                                {
-                                    var op1 = op.Value.Responses[responsesKey];
-
-                                    foreach (var s in request.RemoveContentTypes)
-                                    {
-                                        op1.Content.Remove(s);
-                                    }
-                                }
+                                isUnique = true;
+                                opId = proposedKey;
                             }
 
-                            string opId = op.Value.OperationId;
+                            i++;
+                        } while (!isUnique);
 
-                            if (uniqueOpIds.Contains(opId))
-                            {
-                                var i = 1;
-                                var isUnique = false;
-                                do
-                                {
-                                    var proposedKey = $"{opId}{i}";
-                                    if (!uniqueOpIds.Contains(proposedKey))
-                                    {
-                                        isUnique = true;
-                                        opId = proposedKey;
-                                    }
+                        op.Value.OperationId = opId;
+                    }
 
-                                    i++;
-                                } while (!isUnique);
-
-                                op.Value.OperationId = opId;
-                            }
-
-                            uniqueOpIds.Add(opId);
-                        }
+                    uniqueOpIds.Add(opId);
+                }
 
 
-                        // Remove any operations that was flagged for skipping.
-                        foreach (var openApiOperation in path.Value.Operations)
+                // Remove any operations that was flagged for skipping.
+                foreach (var openApiOperation in path.Value.Operations)
+                {
+                    if (skipSet.Contains(openApiOperation.Value.OperationId.ToLowerInvariant()))
+                    {
+                        path.Value.Operations.Remove(openApiOperation.Key);
+                    }
+
+                    if (openApiOperation.Value.Tags.Select(o=>o.Name.ToLowerInvariant()).Any(o => tags.Contains(o)))
+                    {
+                        foreach (var openApiTag in openApiOperation.Value.Tags)
                         {
-                            if (skipSet.Contains(openApiOperation.Value.OperationId.ToLowerInvariant()))
-                            {
-                                path.Value.Operations.Remove(openApiOperation.Key);
-                            }
-
-                            if (openApiOperation.Value.Tags.Select(o=>o.Name.ToLowerInvariant()).Any(o => tags.Contains(o)))
-                            {
-                                foreach (var openApiTag in openApiOperation.Value.Tags)
-                                {
-                                    var tagName = request.TagRewrite.FirstOrDefault(s => s.Key == openApiTag.Name).Value;
-                                    openApiTag.Name = tagName;
-                                }
-                            }
-
-                        }
-
-                        // Remove entire path if it was skipped.
-                        if (!skipSet.Contains(path.Key.ToLowerInvariant()))
-                        {
-                            var key = path.Key;
-
-                            // Re-write the key if necessary.
-                            foreach (var rewrite in rewrites)
-                            {
-                                if (key.Contains(rewrite))
-                                {
-                                    var requestRewrite = request.PathSegmentToRewrite.FirstOrDefault(s => s.Key == rewrite);
-                                    key = key.Replace(requestRewrite.Key, requestRewrite.Value);
-                                }
-                            }
-
-                            //for (int i = 0; i < path.Value.Operations.Count; i++)
-                            //{
-                                foreach (var operation in path.Value.Operations)
-                                {
-                                    for (int i = 0; i < operation.Value.Parameters.Count; i++)
-                                    {
-                                        var p = operation.Value.Parameters[i].Name.ToLowerInvariant();
-                                        if (paramRewrite.Contains(p))
-                                        {
-                                            var keyPair = request.ParameterRewrite.FirstOrDefault(o => o.Key.ToLowerInvariant() == p);
-                                            operation.Value.Parameters[i].Name = keyPair.Value;
-                                            operation.Value.Parameters[i].Description = operation.Value.Parameters[i].Description?.Replace(keyPair.Key, keyPair.Value);
-                                        }
-                                    }      
-                                }
-
-                                 
-                            //}
-
-
-                            if (path.Value.Operations.Count > 0)
-                            {
-                                outputDoc.Paths.Add(key, path.Value);
-                            }
+                            var tagName = request.TagRewrite.FirstOrDefault(s => s.Key == openApiTag.Name).Value;
+                            openApiTag.Name = tagName;
                         }
                     }
 
+                }
 
-                    if (request.ServerPaths.Length > 0)
+                // Remove entire path if it was skipped.
+                if (!skipSet.Contains(path.Key.ToLowerInvariant()))
+                {
+                    var key = path.Key;
+
+                    // Re-write the key if necessary.
+                    foreach (var rewrite in rewrites)
                     {
-                        foreach (var server in request.ServerPaths)
+                        if (key.Contains(rewrite))
                         {
-                            if (outputDoc.Servers == null)
-                            {
-                                outputDoc.Servers = new List<OpenApiServer>();
-                            }
-
-                            if (!outputDoc.Servers.Any(s => s.Url == server))
-                            {
-
-                                outputDoc.Servers.Add(new OpenApiServer
-                                {
-                                    Url = server
-                                });
-                            }
-                        }
-                    }
-                    else
-                    {
-                        if (outputDoc.Servers != null && outputDoc.Servers.Any())
-                        {
-                            foreach (var server in openApiDocument.Servers)
-                            {
-                                //if (request.PathSegmentToRewrite.Key?.Length > 0)
-                                //    server.Url = server.Url.Replace(request.PathSegmentToRewrite.Key, request.PathSegmentToRewrite.Value);
-
-
-                                // Re-write the key if necessary.
-                                foreach (var rewrite in rewrites)
-                                {
-                                    if (server.Url.Contains(rewrite))
-                                    {
-                                        var requestRewrite = request.PathSegmentToRewrite.FirstOrDefault(s => s.Key == rewrite);
-                                        server.Url = server.Url.Replace(requestRewrite.Key, requestRewrite.Value);
-                                    }
-                                }
-
-                                outputDoc.Servers.Add(server);
-                            }
-                        }
-                        else
-                        {
-
-                            var url = fileName;
-
-                            //if (request.PathSegmentToRewrite.Key?.Length > 0)
-                            //    url = url.Replace(request.PathSegmentToRewrite.Key, request.PathSegmentToRewrite.Value);
-
-
-                            // Re-write the key if necessary.
-                            foreach (var rewrite in rewrites)
-                            {
-                                if (url.Contains(rewrite))
-                                {
-                                    var requestRewrite = request.PathSegmentToRewrite.FirstOrDefault(s => s.Key == rewrite);
-                                    url = url.Replace(requestRewrite.Key, requestRewrite.Value);
-                                }
-                            }
-
-                            outputDoc.Servers = new List<OpenApiServer>();
-                            outputDoc.Servers.Add(new OpenApiServer {
-                                Url = url
-                            });
+                            var requestRewrite = request.PathSegmentToRewrite.FirstOrDefault(s => s.Key == rewrite);
+                            key = key.Replace(requestRewrite.Key, requestRewrite.Value);
                         }
                     }
 
                     
-                    foreach (var schema in openApiDocument.Components.Schemas)
+                    foreach (var operation in path.Value.Operations)
                     {
-                        var cleanKey = schema.Key.Replace("`", "");
-
-                        if (cleanKey.Length < schema.Key.Length || schema.Value.Reference.Id.Contains("`"))
+                        for (int i = 0; i < operation.Value.Parameters.Count; i++)
                         {
-                            Console.WriteLine("");
-
-                            schema.Value.Reference = new OpenApiReference
+                            var p = operation.Value.Parameters[i].Name.ToLowerInvariant();
+                            if (paramRewrite.Contains(p))
                             {
-                                Id = schema.Value.Reference.Id.Replace("`", ""),
-                                ExternalResource = schema.Value.Reference.Id,
-                                //HostDocument = schema.Value.Reference.HostDocument,
-                                IsFragrament = schema.Value.Reference.IsFragrament,
-                                Type = schema.Value.Reference.Type
-                            };
-                            
-                            schema.Value.Reference.ExternalResource = schema.Value.Reference.ExternalResource.Replace("`", "");
-                        }
+                                var keyPair = request.ParameterRewrite.FirstOrDefault(o => o.Key.ToLowerInvariant() == p);
+                                operation.Value.Parameters[i].Name = keyPair.Value;
+                                operation.Value.Parameters[i].Description = operation.Value.Parameters[i].Description?.Replace(keyPair.Key, keyPair.Value);
+                            }
+                        }      
+                    }
 
-                        if (outputDoc.Components.Schemas.ContainsKey(cleanKey))
-                        {
-                            Console.WriteLine($"Key already exists {cleanKey}");
-                        }
-                        else
-                            outputDoc.Components.Schemas.Add(cleanKey, schema.Value);
+                    
+                    if (path.Value.Operations.Count > 0)
+                    {
+                        outputPaths.Add(key, path.Value);
                     }
                 }
             }
 
+            if (request.ServerPaths.Length > 0)
+            {
+                foreach (var server in request.ServerPaths)
+                {
+                    if (!openApiServers.Any(s => s.Url == server))
+                    {
+                        openApiServers.Add(new OpenApiServer { Url = server });
+                    }
+                }
+            }
+            else
+            {
+                foreach (var server in openApiDocument.Servers)
+                {
+                    // Re-write the key if necessary.
+                    foreach (var rewrite in rewrites)
+                    {
+                        if (server.Url.Contains(rewrite))
+                        {
+                            var requestRewrite = request.PathSegmentToRewrite.FirstOrDefault(s => s.Key == rewrite);
+                            server.Url = server.Url.Replace(requestRewrite.Key, requestRewrite.Value);
+                        }
+                    }
+
+                    openApiServers.Add(server);
+                }
+            }
+
+
+            var schemas = GetDocumentSchemas(openApiDocument);
+            foreach (var openApiSchema in schemas)
+            {
+                if (!openApiSchemas.ContainsKey(openApiSchema.Key))
+                {
+                    openApiSchemas.Add(openApiSchema.Key, openApiSchema.Value);
+                }
+            }
         }
+        
+        var outputDoc = new OpenApiDocument
+        {
+            Info = new OpenApiInfo
+            {
+                Title = request.info.title,
+                Version = request.info.version,
+                Description = request.info.description
+            },
+            Paths = outputPaths,
+            Components = new OpenApiComponents { Schemas = openApiSchemas },
+            Servers = openApiServers
+        };
+
 
         var format = request.OutputFormat == OutputFormat.JSON ? OpenApiFormat.Json : OpenApiFormat.Yaml;
         
         var outputString = outputDoc.Serialize(OpenApiSpecVersion.OpenApi3_0, format);
 
         var uniqueName = Guid.NewGuid() + "-swagger.json";
-        var uri = await blobService.UploadBlob(uniqueName, outputString);
+        var uri = await _blobService.UploadBlob(uniqueName, outputString);
 
         var localUrl = $"{HttpContext.Request.Scheme}://{HttpContext.Request.Host}";
 
@@ -352,7 +250,7 @@ public class Parser : ControllerBase
         Response.Headers.Add("blob-uri", uri.Item1);
         Response.Headers.Add("file-name", uniqueName);
         Response.Headers.Add("swagger-view", $"{localUrl}/swagger-explorer/?uri={localUrl}/Parser/SwaggerView/{uniqueName}");
-        Response.Headers.Add("Content-Disposition", $"attachment; filename=swagger.{request.OutputFormat.ToString().ToLowerInvariant()}");
+        Response.Headers.Add("Content-Disposition", $"attachment; filename={uniqueName}");
         await Response.WriteAsync(outputString);
         await Response.CompleteAsync();
     }
@@ -360,68 +258,74 @@ public class Parser : ControllerBase
     [HttpGet("SwaggerView/{fileName}")]
     public async Task<IActionResult> Get(string fileName)
     {
-        var stream = await blobService.DownloadStream(fileName);
+        var stream = await _blobService.DownloadStream(fileName);
         if (stream == null)
             return NotFound();
 
         return File(stream, "application/octet-stream"); // Set the appropriate Content-Type for your data
     }
-}
-
-public class SwaggerCombineRequest
-{
-    [Required]
-    [MinLength(1)]
-    public List<string> swaggerJsonUrls { get; set; }
-
-    [Required]
-    public Info info { get; set; }
-
-    public string[] methodsToSkip { get; set; }
-
-    public string[] RemoveContentTypes { get; set; }
-
-    public string[] ServerPaths { get; set; }
-
-    public KeyValuePair<string, string>[] TagRewrite { get; set; }
-
-    public KeyValuePair<string, string>[] PathSegmentToRewrite { get; set; }
-
-    public KeyValuePair<string, string>[] ParameterRewrite { get; set; }
-
-    public OutputFormat OutputFormat { get; set; } = OutputFormat.JSON;
-}
-
-public enum OutputFormat
-{
-    [Description("YAML")]
-    YAML,
-    [Description("JSON")]
-    JSON
-}
 
 
-//public class SwaggerDoc
-//{
-//    public string openapi { get; set; }
-//    public object servers { get; set; }
-//    public Info info { get; set; }
-//    public Dictionary<string, object> paths { get; set; }
-//    public Components components { get; set; }
-//}
+    private Dictionary<string, OpenApiSchema> GetDocumentSchemas(OpenApiDocument openApiDocument)
+    {
+        var openApiSchemas = new Dictionary<string, OpenApiSchema>();
 
-public class Info
-{
-    public string title { get; set; }
-    public string version { get; set; }
-}
+        foreach (var schema in openApiDocument.Components.Schemas)
+        {
+            var cleanKey = schema.Key.Replace("`", "");
 
-public class Components
-{
-    public Schemas schemas { get; set; }
-}
+            if (cleanKey.Length < schema.Key.Length || schema.Value.Reference.Id.Contains("`"))
+            {
+                schema.Value.Reference = new OpenApiReference
+                {
+                    Id = schema.Value.Reference.Id.Replace("`", ""),
+                    ExternalResource = schema.Value.Reference.Id,
+                    //HostDocument = schema.Value.Reference.HostDocument,
+                    IsFragrament = schema.Value.Reference.IsFragrament,
+                    Type = schema.Value.Reference.Type
+                };
 
-public class Schemas
-{
-    public Dictionary<string, object> properties { get; set; }
+                schema.Value.Reference.ExternalResource = schema.Value.Reference.ExternalResource.Replace("`", "");
+            }
+
+            if (openApiSchemas.ContainsKey(cleanKey))
+            {
+                Console.WriteLine($"Key already exists {cleanKey}");
+            }
+            else
+                openApiSchemas.Add(cleanKey, schema.Value);
+        }
+
+        return openApiSchemas;
+    }
+
+    private async Task<OpenApiDocument> GetOpenApiDocument(string jsonFileUrl)
+    {
+        // Download the swagger json files for parsing.
+        using var client = new WebClient();
+        var content = await client.DownloadDataTaskAsync(jsonFileUrl);
+        using var stream = new MemoryStream(content);
+
+        // Read the downloaded file content.
+        return new OpenApiStreamReader().Read(stream, out _);
+    }
+
+    private List<object> GetOpenApiDocumentOperations(OpenApiDocument openApiDocument, string jsonFileUrl)
+    {
+        var operations = new List<object>();
+        foreach (var path in openApiDocument.Paths)
+        {
+            foreach (var op in path.Value.Operations)
+            {
+                operations.Add(new { Endpoint = path.Key, Method = op.Key.ToString(), op.Value.OperationId, url = $"{jsonFileUrl.Split("/swagger").FirstOrDefault()}{path.Key}" });
+            }
+        }
+
+        return operations;
+    }
+
+    private List<OpenApiError> GetOpenApiDocumentErrors(OpenApiDocument openApiDocument)
+    {
+        return openApiDocument.Validate(ValidationRuleSet.GetDefaultRuleSet()).ToList();
+    }
 }

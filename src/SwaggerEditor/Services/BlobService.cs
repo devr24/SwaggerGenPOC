@@ -1,7 +1,5 @@
-﻿using System.Runtime.CompilerServices;
-using Azure;
+﻿using Azure;
 using Azure.Storage.Blobs;
-using Azure.Storage.Blobs.Specialized;
 using Azure.Storage.Sas;
 
 namespace SwaggerEditor.Services
@@ -10,7 +8,7 @@ namespace SwaggerEditor.Services
     {
         Task<Tuple<string, string>> UploadBlob(string localFilePath, string content);
         Task DownloadToStream(string localFilePath, MemoryStream memoryStream);
-        Task<Stream> DownloadStream(string localFilePath);
+        Task<Stream?> DownloadStream(string localFilePath);
     }
 
     public class BlobService : IBlobService
@@ -74,7 +72,7 @@ namespace SwaggerEditor.Services
 
         }
 
-        public async Task<Stream> DownloadStream(string localFilePath)
+        public async Task<Stream?> DownloadStream(string localFilePath)
         {
             BlobClient blobClient = blobContainerClient.GetBlobClient(localFilePath);
 
