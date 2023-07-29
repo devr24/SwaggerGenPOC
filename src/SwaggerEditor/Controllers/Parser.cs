@@ -1,4 +1,4 @@
-﻿using System.Collections.Immutable;
+﻿using Azure.Core;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.OpenApi;
 using Microsoft.OpenApi.Extensions;
@@ -8,7 +8,6 @@ using Microsoft.OpenApi.Validations;
 using SwaggerEditor.Models;
 using SwaggerEditor.Services;
 using System.Net;
-using Azure.Core;
 
 namespace SwaggerEditor.Controllers;
 
@@ -221,7 +220,8 @@ public class Parser : ControllerBase
                 }
             }
         }
-        
+
+
         var outputDoc = new OpenApiDocument
         {
             Info = new OpenApiInfo
@@ -231,14 +231,21 @@ public class Parser : ControllerBase
                 Description = request.info.description
             },
             Paths = outputPaths,
-            Components = new OpenApiComponents { Schemas = openApiSchemas },
+            Components = new OpenApiComponents
+            {
+                Schemas = openApiSchemas
+            },
             Servers = openApiServers
         };
 
+        if (request.AddAuthentication)
+            AddSecurity(outputDoc);
 
         var format = request.OutputFormat == OutputFormat.JSON ? OpenApiFormat.Json : OpenApiFormat.Yaml;
-        
         var outputString = outputDoc.Serialize(OpenApiSpecVersion.OpenApi3_0, format);
+
+        if (request.AddAuthentication)
+            outputString = AddSecurityHack(outputString);
 
         var uniqueName = Guid.NewGuid() + "-swagger.json";
         var uri = await _blobService.UploadBlob(uniqueName, outputString);
@@ -265,6 +272,50 @@ public class Parser : ControllerBase
         return File(stream, "application/octet-stream"); // Set the appropriate Content-Type for your data
     }
 
+    // Dirty hack because I couldn't get it to add the "Bearer" array to the Security Requirement properly.
+    private string AddSecurityHack(string outputDoc)
+    {
+            var startPos = outputDoc.IndexOf("\"security\":");
+            var endPost = outputDoc.IndexOf("]", startPos);
+            outputDoc = outputDoc.Remove(startPos, (endPost - startPos) + 1);
+            return outputDoc.Insert(startPos, "\"security\":[{\"Bearer\":[]}]");
+    }
+
+    private void AddSecurity(OpenApiDocument openApiDocument)
+    {
+        var securityKey = "Bearer";
+        var securityScheme = GetSecurityScheme();
+        var securityRequirement = GetSecurityRequirement(securityScheme, securityKey);
+
+        openApiDocument.SecurityRequirements = new List<OpenApiSecurityRequirement> { securityRequirement };
+        openApiDocument.Components.SecuritySchemes = new Dictionary<string, OpenApiSecurityScheme>
+        {
+            { securityKey, securityScheme }
+        };
+    }
+
+    private OpenApiSecurityScheme GetSecurityScheme()
+    {
+        return new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.ApiKey,
+            Description = "Please insert JWT with Bearer into field",
+            In = ParameterLocation.Header,
+            Name = "Authorization"
+        };
+    }
+
+    private OpenApiSecurityRequirement GetSecurityRequirement(OpenApiSecurityScheme securityScheme, string key = "Bearer")
+    {
+        return new OpenApiSecurityRequirement
+        {
+            {
+                securityScheme,
+                new List<string>(1) { key }
+            }
+        };
+    }
+
 
     private Dictionary<string, OpenApiSchema> GetDocumentSchemas(OpenApiDocument openApiDocument)
     {
@@ -287,7 +338,7 @@ public class Parser : ControllerBase
 
                 schema.Value.Reference.ExternalResource = schema.Value.Reference.ExternalResource.Replace("`", "");
             }
-
+            
             if (openApiSchemas.ContainsKey(cleanKey))
             {
                 Console.WriteLine($"Key already exists {cleanKey}");

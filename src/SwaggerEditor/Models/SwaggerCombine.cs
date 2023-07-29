@@ -12,6 +12,8 @@ public class SwaggerCombine
     [Required]
     public Info info { get; set; }
 
+    public bool AddAuthentication { get; set; }
+
     public string[] methodsToSkip { get; set; }
 
     public string[] RemoveContentTypes { get; set; }
