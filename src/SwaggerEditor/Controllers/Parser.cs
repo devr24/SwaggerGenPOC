@@ -243,10 +243,7 @@ public class Parser : ControllerBase
 
         var format = request.OutputFormat == OutputFormat.JSON ? OpenApiFormat.Json : OpenApiFormat.Yaml;
         var outputString = outputDoc.Serialize(OpenApiSpecVersion.OpenApi3_0, format);
-
-        if (request.AddAuthentication)
-            outputString = AddSecurityHack(outputString);
-
+        
         var uniqueName = Guid.NewGuid() + "-swagger.json";
         var uri = await _blobService.UploadBlob(uniqueName, outputString);
 
@@ -272,15 +269,6 @@ public class Parser : ControllerBase
         return File(stream, "application/octet-stream"); // Set the appropriate Content-Type for your data
     }
 
-    // Dirty hack because I couldn't get it to add the "Bearer" array to the Security Requirement properly.
-    private string AddSecurityHack(string outputDoc)
-    {
-            var startPos = outputDoc.IndexOf("\"security\":");
-            var endPost = outputDoc.IndexOf("]", startPos);
-            outputDoc = outputDoc.Remove(startPos, (endPost - startPos) + 1);
-            return outputDoc.Insert(startPos, "\"security\":[{\"Bearer\":[]}]");
-    }
-
     private void AddSecurity(OpenApiDocument openApiDocument)
     {
         var securityKey = "Bearer";
@@ -301,7 +289,9 @@ public class Parser : ControllerBase
             Type = SecuritySchemeType.ApiKey,
             Description = "Please insert JWT with Bearer into field",
             In = ParameterLocation.Header,
-            Name = "Authorization"
+            Name = "Authorization",
+            Scheme = "bearer",
+            BearerFormat = "JWT",
         };
     }
 
@@ -310,8 +300,12 @@ public class Parser : ControllerBase
         return new OpenApiSecurityRequirement
         {
             {
-                securityScheme,
-                new List<string>(1) { key }
+                new OpenApiSecurityScheme
+                {
+                    Reference = new OpenApiReference
+                        { Type = ReferenceType.SecurityScheme, Id = "Bearer" },
+                },
+                Array.Empty<string>()
             }
         };
     }
